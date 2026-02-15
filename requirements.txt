@@ -1,0 +1,33 @@
+# ============================================
+# Sara AI - Week 1 Dependencies
+# ============================================
+
+# --- PyTorch (CPU/MPS for macOS) ---
+torch>=2.3.0
+torchaudio>=2.3.0
+
+# --- Speech-to-Text ---
+faster-whisper>=1.0.3
+
+# --- Voice Activity Detection ---
+silero-vad>=5.1
+
+# --- Audio I/O ---
+sounddevice
+soundfile
+librosa
+
+# --- LLM (Groq Cloud API) ---
+groq
+
+# --- Memory System ---
+mem0ai
+chromadb
+ollama
+
+# --- Text-to-Speech ---
+edge-tts
+
+# --- Utilities ---
+python-dotenv
+aiohttp
