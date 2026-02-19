@@ -125,6 +125,13 @@ class SaraAI:
             # Play a thinking sound to eliminate dead silence
             self.tts.play_thinking_sound()
 
+            # Index user message into RAG memory
+            self.brain.rag.remember(
+                speaker="user",
+                text=transcription,
+                emotional_state=emotional_state,
+            )
+
             # Transition to SPEAKING
             self.state.transition(ConversationState.SPEAKING)
             self.barge_in.on_tts_start()
@@ -138,6 +145,9 @@ class SaraAI:
 
             self.barge_in.on_tts_stop()
 
+            # Collect full response text for RAG indexing
+            full_response = result['full_text'] if not result['interrupted'] else result['spoken']
+
             if result["interrupted"]:
                 print(f"💬 Sara: {result['spoken']} [interrupted]")
                 self.state.store_interruption_context(
@@ -146,6 +156,14 @@ class SaraAI:
             else:
                 print(f"💬 Sara: {result['full_text']}")
                 self.state.clear_interruption_context()
+
+            # Index Sara's response into RAG memory
+            if full_response.strip():
+                self.brain.rag.remember(
+                    speaker="sara",
+                    text=full_response.strip(),
+                    emotional_state=emotional_state,
+                )
 
         except Exception as e:
             print(f"❌ Streaming error: {e}")
@@ -259,6 +277,9 @@ class SaraAI:
 
         # Save conversation to markdown
         self.brain.memory.save_session_to_markdown()
+
+        # Flush RAG session — creates long-term session summary
+        self.brain.rag.flush_session()
 
         print("\n💙 Sara: Until next time, Sir. Take care.")
         print("\n✓ Session saved to conversations/\n")

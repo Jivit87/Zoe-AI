@@ -19,6 +19,7 @@ from typing import Optional, Dict, Generator
 from datetime import datetime
 
 from src.memory.conversation_memory import ConversationMemory
+from src.rag.rag_pipeline import SaraRAG
 
 load_dotenv()
 
@@ -28,6 +29,18 @@ class SaraBrain:
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         self.model = model
         self.memory = ConversationMemory()
+
+        # RAG memory system — SOTA 2025 pipeline
+        self.rag = SaraRAG(
+            groq_client=self.client,
+            persist_directory="./data/chroma_db",
+            use_reranker=False,                # Disabled for voice latency
+            use_recontextualization=False,     # Disabled for voice latency
+            use_hyde=False,                    # Disabled for voice latency
+            use_decomposition=False,           # Disabled for voice latency
+            use_mmr=False,                     # Disabled for voice latency
+            top_k_final=5,
+        )
         
         # Track conversation flow for more natural responses
         self.conversation_state = {
@@ -111,6 +124,14 @@ Sara: "Okay. Talk to me. What happened?"
 User: "Why do you even care?"
 Sara: "Because I do. Is that so hard to believe?"
 
+MEMORY:
+When memory context is provided (=== SARA'S MEMORY ===):
+- Reference past conversations naturally ("I remember you mentioned...", "Last time we talked about...")
+- Prioritize emotionally significant memories
+- Don't mechanically list facts — weave them into natural responses
+- Use memory to show continuity and genuine care
+- If no memory context is provided, that's fine — just be present
+
 THE CORE PRINCIPLE:
 Be real. Be present. Be human in the ways that matter. Care genuinely, respond naturally, and make them feel less alone. That's the whole job."""
 
@@ -190,6 +211,14 @@ Be real. Be present. Be human in the ways that matter. Care genuinely, respond n
         if memories:
             recent_context = " Earlier they mentioned: " + "; ".join(memories[-3:])
             context_parts.append(recent_context)
+
+        # RAG long-term memory context
+        rag_memory = self.rag.recall(
+            query=user_input,
+            conversation_context=" ".join(memories[-4:]) if memories else "",
+        )
+        if rag_memory:
+            context_parts.append(rag_memory)
         
         # Visual context if present
         if visual_context:
