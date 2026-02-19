@@ -13,25 +13,28 @@ Sara doesn't position herself as an "AI assistant" - she's just Sara. The design
 - Long-term memory and contextual awareness
 - Authentic personality with quirks and warmth
 
-## Current Status: Week 1 MVP (Completed)
+## Current Status: Enhanced Conversation Flow (Completed)
 
-The project has successfully implemented a full voice-to-voice conversation loop with the following capabilities:
+The project implements a full voice-to-voice conversation loop with human-quality turn-taking, barge-in support, emotion detection, and progressive engagement:
 
 ### Implemented Features
 
 #### 1. Voice Input (Speech-to-Text)
 - **Technology**: Faster-Whisper (small model) running on CPU
-- **Voice Activity Detection**: Silero-VAD for intelligent speech boundary detection
+- **Voice Activity Detection**: Silero-VAD with **hysteresis thresholding** (0.85 start / 0.30 stop)
 - **Features**:
   - Real-time microphone listening
   - Pre-roll audio buffering (captures audio just before speech starts)
   - Silence detection to determine end of utterance
-  - Pause/Resume capability to prevent echo (Sara doesn't hear herself)
+  - **Mic stays active during TTS** for barge-in detection
+  - **Backchannel filtering**: "yeah"/"mm-hmm" don't trigger new turns
   - Minimum audio length filtering to avoid processing noise
+  - Audio duration tracking for emotion analysis
 
 #### 2. Conversational Intelligence (Brain)
 - **LLM**: Groq API with llama-3.3-70b-versatile
 - **Personality System**: Deeply human conversational patterns
+- **Streaming**: `generate_response_streaming()` yields sentence-sized chunks to TTS as tokens arrive — first audio starts in ~0.65s instead of waiting for the full response
 - **Features**:
   - Natural speech patterns (fillers, contractions, incomplete thoughts)
   - Emotional intelligence and context awareness
@@ -56,14 +59,17 @@ The project has successfully implemented a full voice-to-voice conversation loop
 - **Voice**: af_bella (natural, conversational female voice)
 - **Features**:
   - Local inference (no cloud dependency)
-  - Real-time audio playback
-  - Temporary file management
-  - Automatic cleanup
+  - **Streaming playback**: `speak_stream()` plays each sentence chunk as it arrives
+  - **Interruptible**: checks cancel event between chunks and during playback (50ms polling)
+  - **Thinking sounds**: plays filler ("Hmm...", "Well...") before LLM responds to eliminate dead silence
+  - Returns spoken/remaining text on interruption for context
 
-#### 5. Proactive Engagement
-- **Silence Monitoring**: Background thread tracks user silence
-- **Check-ins**: Sara proactively reaches out after 30 seconds of silence
-- **Greeting**: Initiates conversation with "Hello Sir, I'm online. How are you feeling right now?"
+#### 5. Conversation Management
+- **State Machine**: `ConversationState` enum (IDLE → LISTENING → PROCESSING → SPEAKING → INTERRUPTED)
+- **Barge-In Detection**: 4-condition filter (grace period + energy + VAD + time-gating)
+- **Backchannel Classification**: filters short acknowledgments from real turns
+- **Emotion Detection**: text keywords + speech timing (WPS) → dynamic LLM adaptation
+- **Progressive Silence**: multi-tier check-ins at 15s/30s/60s/120s with context-aware responses
 
 ## Technical Architecture
 
@@ -71,35 +77,44 @@ The project has successfully implemented a full voice-to-voice conversation loop
 
 ```
 src/
-├── main.py                    # Main conversation loop orchestrator
+├── main.py                         # Conversation orchestrator + state machine
+├── conversation/
+│   ├── state_machine.py           # ConversationState enum + StateManager
+│   ├── barge_in.py                # BargeInDetector (4-condition filter)
+│   └── backchannel.py             # BackchannelClassifier + BackchannelManager
+├── emotion/
+│   └── emotion_detector.py        # Text + audio timing emotion analysis
 ├── llm/
-│   └── sara_brain.py         # Groq-powered conversational intelligence
+│   └── sara_brain.py              # Groq-powered conversational intelligence
 ├── memory/
-│   └── conversation_memory.py # Conversation history & context
+│   └── conversation_memory.py     # Conversation history & context
 ├── stt/
-│   ├── speech_recognizer.py  # Faster-Whisper integration
-│   └── voice_activity_detector.py # Silero-VAD for speech detection
+│   ├── speech_recognizer.py       # Faster-Whisper + barge-in routing
+│   └── voice_activity_detector.py # Silero-VAD with hysteresis
 ├── tts/
-│   └── voice_generator.py    # Kokoro-82M ONNX TTS
+│   └── voice_generator.py         # Kokoro-82M ONNX TTS + streaming
 └── models/
-    └── kokoro/               # TTS model files
+    └── kokoro/                    # TTS model files
 ```
 
 ### Data Flow
 
-1. **Listen**: Microphone → VAD → Speech Detection → Audio Buffer
-2. **Transcribe**: Audio Buffer → Faster-Whisper → Text
-3. **Think**: Text → Sara Brain (Groq) → Response
-4. **Remember**: Conversation → Memory System → Markdown Log
-5. **Speak**: Response → Kokoro TTS → Audio Playback
+1. **Listen**: Microphone → Hysteresis VAD → Speech Detection → Audio Buffer
+2. **Barge-In Check**: During SPEAKING → BargeInDetector monitors mic → cancel TTS if real
+3. **Transcribe**: Audio Buffer → Faster-Whisper → Text (backchannels filtered)
+4. **Detect Emotion**: Text + Audio Duration → EmotionDetector → state
+5. **Think**: Thinking sound plays → Groq streams tokens → sentence chunks
+6. **Speak**: Chunks → Kokoro TTS → interruptible playback
+7. **Remember**: Conversation → Memory System → Markdown Log
 
 ### Key Design Decisions
 
 - **CPU-only inference**: Optimized for macOS without GPU requirements
-- **Lightweight memory**: Avoids heavy embedding models (Ollama) for speed
-- **Pause/Resume audio**: Prevents Sara from hearing herself speak
-- **Markdown logging**: Human-readable conversation history
-- **Proactive engagement**: Background thread for silence monitoring
+- **Lightweight memory**: Avoids heavy embedding models for speed
+- **Hysteresis VAD**: Dual thresholds prevent false-positive speech detection
+- **Mic active during TTS**: Enables barge-in without echo cancellation hardware
+- **State machine**: Thread-safe `StateManager` replaces boolean flags
+- **Progressive silence**: Context-aware multi-tier check-ins (not fixed interval)
 
 ## Conversation Personality
 
@@ -134,15 +149,17 @@ The project includes comprehensive test files:
 - `test_stt.py`: Tests real-time speech-to-text transcription
 - `test_groq.py`: Validates Groq API connection and Sara's personality
 - `test_brain.py`: Text-based chat interface for testing conversational logic
+- `test_streaming.py`: Tests streaming LLM→TTS pipeline (no mic needed) — shows time-to-first-chunk vs total time
 
 ## Planned Features (Not Yet Implemented)
 
-### Week 2+ Roadmap
+### Future Roadmap
 - **Vision**: Camera integration for visual context awareness
-- **Emotion Detection**: Real-time emotional state analysis from voice
 - **Avatar**: Visual representation with emotional expressions
-- **WhatsApp Integration**: Bridge for text-based conversations (directory exists but not implemented)
+- **WhatsApp Integration**: Bridge for text-based conversations
 - **Advanced Memory**: Vector embeddings for semantic memory search
+- **Semantic EoT**: BERT/Groq classifier for end-of-turn detection
+- **Speaker-adapted VAD**: Learn user voice profile during session
 - **Multi-modal Context**: Combining voice, vision, and emotional cues
 
 ## Technology Stack
@@ -187,10 +204,12 @@ python -m src.main
 
 ### Interaction Flow
 1. Sara greets: "Hello Sir, I'm online. How are you feeling right now?"
-2. Speak naturally - Sara listens continuously
-3. Pause when done speaking - Sara detects silence and responds
-4. Sara speaks her response (audio input paused during this)
-5. Cycle continues until Ctrl+C
+2. Speak naturally — Sara listens continuously
+3. Pause when done — Sara detects silence and responds
+4. Sara plays a thinking sound, then streams her response as chunks
+5. **Interrupt anytime** — speak while Sara is talking and she'll stop
+6. If silent for 15s/30s/60s, Sara checks in with context-aware responses
+7. Cycle continues until Ctrl+C
 
 ### Stopping Sara
 - Press Ctrl+C
@@ -200,18 +219,19 @@ python -m src.main
 ## Current Limitations
 
 1. **No visual input**: Camera/vision not yet integrated
-2. **Basic emotion detection**: Currently uses "neutral" placeholder
-3. **Simple memory**: No semantic search, just recent context
-4. **English only**: Whisper configured for English transcription
-5. **Single user**: No multi-user support or user identification
-6. **No WhatsApp bridge**: Directory exists but not implemented
+2. **Simple memory**: No semantic search, just recent context
+3. **English only**: Whisper configured for English transcription
+4. **Single user**: No multi-user support or user identification
+5. **No WhatsApp bridge**: Directory exists but not implemented
+6. **No semantic EoT**: End-of-turn is still silence-based, not semantic
 
 ## Performance Characteristics
 
 - **STT Latency**: ~500ms for transcription (Faster-Whisper small model)
-- **LLM Latency**: ~200-500ms (Groq API, depends on network)
-- **TTS Latency**: <100ms (Kokoro-82M local inference)
-- **Total Response Time**: ~1-2 seconds from speech end to Sara's voice
+- **LLM Time-to-First-Token**: ~200-400ms (Groq streaming API)
+- **TTS Latency**: <100ms per chunk (Kokoro-82M local inference)
+- **Time to First Audio**: ~0.65s from speech end (streaming — Sara speaks the first sentence before the full response is generated)
+- **Total Response Time**: ~1-2 seconds end-to-end (perceived as much shorter due to streaming)
 
 ## Development History
 

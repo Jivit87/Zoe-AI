@@ -1,34 +1,38 @@
 """
-Voice Generator using Kokoro-82M (ONNX)
-=======================================
+Voice Generator using Kokoro-82M (ONNX) — Enhanced
+=====================================================
 Ultra-fast, high-quality TTS optimized for local inference.
-Uses the 82M parameter model via ONNX Runtime.
 
-Falls back to Edge-TTS if Kokoro fails to load.
-
-Streaming: speak_stream(chunks) plays each text chunk as it arrives
-so the first sentence is spoken before the LLM has even finished
-generating the full response.
+Enhancements:
+  - Interruptible speak_stream(): checks cancel_event between chunks
+  - Thinking sounds: pre-recorded filler phrases to eliminate dead silence
+  - Returns spoken/remaining text on interruption for context tracking
 """
 
 import sounddevice as sd
 import soundfile as sf
-from typing import Iterator
+from typing import Iterator, Optional
 import numpy as np
 import os
+import random
 import tempfile
-import sys
+import threading
+
+
+# Pre-defined thinking sounds — played while LLM generates
+THINKING_SOUNDS = [
+    "Hmm...",
+    "Well...",
+    "Let me think...",
+    "Mmm.",
+    "Yeah...",
+]
 
 
 class VoiceGenerator:
-    """Text-to-Speech using Kokoro-82M (ONNX)."""
+    """Text-to-Speech using Kokoro-82M (ONNX) with interruption support."""
 
-    # Available voices in voices.bin:
-    #   af, af_bella, af_nicole, af_sarah, af_sky
-    #   am, am_adam, am_michael
-    #   bf_emma, bf_isabella
-    #   bm_george, bm_lewis
-    DEFAULT_VOICE = "af_bella"  # Natural, conversational female voice
+    DEFAULT_VOICE = "af_bella"
     DEFAULT_LANG = "en-us"
 
     def __init__(self, voice=None, use_edge_fallback=True):
@@ -37,6 +41,9 @@ class VoiceGenerator:
         self.use_edge_fallback = use_edge_fallback
         self.kokoro = None
         self._edge_tts = None
+
+        # Cancel event — set by StateManager during barge-in
+        self.cancel_event: Optional[threading.Event] = None
 
         # Absolute path to model files
         self.model_path = os.path.abspath("src/models/kokoro/kokoro-v0_19.onnx")
@@ -70,12 +77,7 @@ class VoiceGenerator:
         print("🔊 Edge-TTS fallback ready (voice: en-US-AvaNeural)")
 
     def generate_audio(self, text):
-        """
-        Generate audio from text.
-
-        Returns:
-            Path to generated WAV file
-        """
+        """Generate audio from text. Returns path to WAV file."""
         if self.kokoro is not None:
             return self._generate_kokoro(text)
         elif self._edge_tts:
@@ -86,12 +88,9 @@ class VoiceGenerator:
     def _generate_kokoro(self, text):
         """Generate audio using Kokoro-ONNX."""
         output_path = os.path.join(self.temp_dir, "sara_speech.wav")
-
-        # Generate audio (returns samples, sample_rate)
         samples, sample_rate = self.kokoro.create(
             text, voice=self.voice, speed=1, lang=self.DEFAULT_LANG
         )
-
         sf.write(output_path, samples, sample_rate)
         return output_path
 
@@ -111,39 +110,42 @@ class VoiceGenerator:
         asyncio.run(_gen())
         return output_path
 
+    # ─── Core playback methods ────────────────────────────────────────
+
     def speak(self, text):
-        """Generate speech and play it through speakers."""
+        """Generate speech and play it through speakers (blocking, non-interruptible)."""
         try:
             audio_file = self.generate_audio(text)
-
             data, samplerate = sf.read(audio_file)
             sd.play(data, samplerate)
             sd.wait()
-
             try:
                 os.remove(audio_file)
             except OSError:
                 pass
-
         except Exception as e:
             print(f"❌ TTS error: {e}")
 
-    def speak_stream(self, chunks: Iterator[str]) -> str:
+    def speak_stream(self, chunks: Iterator[str]) -> dict:
         """
-        Play text chunks sequentially as they arrive from a streaming LLM.
+        Play text chunks sequentially, with barge-in interruption support.
 
-        Each chunk is synthesised and played to completion before the
-        next chunk is processed. This means the first sentence starts
-        playing as soon as Groq produces it — without waiting for the
-        full response.
+        Between each chunk, checks self.cancel_event. If set, stops
+        immediately and returns what was spoken vs what remains.
 
         Args:
-            chunks: An iterator/generator of text strings (sentence chunks)
+            chunks: Iterator of text strings from streaming LLM
 
         Returns:
-            The full assembled response text (for logging/display)
+            dict with:
+                "full_text":  All text (spoken + unspoken)
+                "spoken":     Text that was actually played
+                "remaining":  Text that was NOT played (interrupted)
+                "interrupted": True if playback was interrupted
         """
-        full_text_parts = []
+        spoken_parts = []
+        remaining_parts = []
+        interrupted = False
         chunk_index = 0
 
         for chunk in chunks:
@@ -151,24 +153,86 @@ class VoiceGenerator:
             if not chunk:
                 continue
 
-            chunk_index += 1
-            full_text_parts.append(chunk)
+            # Check cancel BEFORE synthesizing this chunk
+            if self.cancel_event and self.cancel_event.is_set():
+                remaining_parts.append(chunk)
+                interrupted = True
+                # Drain remaining chunks without playing
+                for remaining in chunks:
+                    remaining = remaining.strip()
+                    if remaining:
+                        remaining_parts.append(remaining)
+                break
 
-            # Synthesise and play this chunk immediately
-            # (next chunk is already being generated by Groq in parallel)
+            chunk_index += 1
+
+            # Synthesize and play this chunk
             try:
                 audio_file = self.generate_audio(chunk)
                 data, samplerate = sf.read(audio_file)
                 sd.play(data, samplerate)
-                sd.wait()  # Block until THIS chunk finishes playing
+
+                # Wait for playback, but check cancel periodically
+                while sd.get_stream().active:
+                    if self.cancel_event and self.cancel_event.is_set():
+                        sd.stop()  # Stop audio immediately
+                        spoken_parts.append(chunk)  # Partially spoken
+                        interrupted = True
+                        # Drain remaining chunks
+                        for remaining in chunks:
+                            remaining = remaining.strip()
+                            if remaining:
+                                remaining_parts.append(remaining)
+                        break
+                    sd.sleep(50)  # Check every 50ms
+
+                if interrupted:
+                    break
+
+                spoken_parts.append(chunk)
+
                 try:
                     os.remove(audio_file)
                 except OSError:
                     pass
+
             except Exception as e:
                 print(f"❌ TTS stream error on chunk {chunk_index}: {e}")
 
-        return " ".join(full_text_parts)
+        spoken = " ".join(spoken_parts)
+        remaining = " ".join(remaining_parts)
+
+        return {
+            "full_text": (spoken + " " + remaining).strip(),
+            "spoken": spoken,
+            "remaining": remaining,
+            "interrupted": interrupted,
+        }
+
+    # ─── Thinking sounds ──────────────────────────────────────────────
+
+    def play_thinking_sound(self):
+        """
+        Play a random filler sound ("Hmm...", "Well...") to eliminate
+        dead silence while the LLM is generating its response.
+
+        Short and quick — typically ~200ms of audio.
+        """
+        sound = random.choice(THINKING_SOUNDS)
+        try:
+            audio_file = self.generate_audio(sound)
+            data, samplerate = sf.read(audio_file)
+            sd.play(data, samplerate)
+            sd.wait()
+            try:
+                os.remove(audio_file)
+            except OSError:
+                pass
+        except Exception as e:
+            # Non-critical — just skip if it fails
+            pass
+
+    # ─── Utility ──────────────────────────────────────────────────────
 
     def speak_and_save(self, text, output_path=None):
         """Generate speech, play it, and save the WAV file."""
