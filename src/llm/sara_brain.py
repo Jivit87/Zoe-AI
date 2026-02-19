@@ -5,13 +5,17 @@ Uses Groq API (llama-3.3-70b-versatile) with deeply human personality.
 Now with enhanced natural conversation patterns and emotional depth.
 
 Inspired by "Building Emotionally Intelligent AI Companions" (ideal.md).
+
+Streaming: generate_response_streaming() yields sentence-sized text chunks
+as tokens arrive from Groq, allowing TTS to start on the first chunk
+while the rest of the response is still being generated.
 """
 
 from groq import Groq
 from dotenv import load_dotenv
 import os
 import random
-from typing import Optional, Dict
+from typing import Optional, Dict, Generator
 from datetime import datetime
 
 from src.memory.conversation_memory import ConversationMemory
@@ -313,6 +317,112 @@ Be real. Be present. Be human in the ways that matter. Care genuinely, respond n
                 "Ugh, I blanked out for a second. One more time?",
             ]
             return random.choice(error_responses)
+
+    def generate_response_streaming(
+        self,
+        user_input: str,
+        emotional_state: Optional[str] = "neutral",
+        visual_context: Optional[str] = None,
+    ) -> Generator[str, None, None]:
+        """
+        Stream Sara's response as sentence-sized text chunks.
+
+        Yields one chunk per sentence boundary so TTS can start
+        playing the first sentence while Groq is still generating
+        the rest. After the stream completes the full response is
+        saved to memory exactly like generate_response().
+
+        Usage:
+            for chunk in brain.generate_response_streaming(user_input):
+                tts.speak(chunk)   # starts on chunk 1, not after all chunks
+        """
+        # Analyze state and build context (same as non-streaming path)
+        user_state = self._analyze_user_state(user_input, emotional_state)
+        memories = self.memory.retrieve_relevant_memories(user_input, limit=5)
+        context_prompt = self._build_dynamic_context(
+            user_input, emotional_state, visual_context, user_state, memories
+        )
+        temperature = self._adjust_temperature_based_on_context(user_state)
+
+        if user_state["seems_distressed"] or user_state["is_silent"]:
+            max_tokens = 100
+        elif user_state["is_opening_up"]:
+            max_tokens = 200
+        else:
+            max_tokens = 150
+
+        # Sentence endings that trigger a TTS chunk flush
+        SENTENCE_ENDINGS = {".", "!", "?"}
+        MIN_CHUNK_WORDS = 3  # Don't speak tiny fragments
+
+        text_buffer = ""
+        full_response = ""
+
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": context_prompt},
+                    {"role": "user", "content": user_input},
+                ],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_p=0.9,
+                frequency_penalty=0.3,
+                presence_penalty=0.2,
+                stream=True,  # ← the key difference
+            )
+
+            for chunk in stream:
+                token = chunk.choices[0].delta.content
+                if token is None:
+                    continue
+
+                text_buffer += token
+                full_response += token
+
+                # Flush buffer to TTS when we hit a sentence boundary
+                # and have enough words to be worth synthesising
+                stripped = text_buffer.rstrip()
+                if (
+                    stripped
+                    and stripped[-1] in SENTENCE_ENDINGS
+                    and len(stripped.split()) >= MIN_CHUNK_WORDS
+                ):
+                    yield text_buffer
+                    text_buffer = ""
+
+            # Yield any remaining text (e.g. response ends without punctuation)
+            if text_buffer.strip():
+                yield text_buffer
+                full_response_final = full_response
+            else:
+                full_response_final = full_response
+
+        except Exception as e:
+            print(f"❌ Groq streaming error: {e}")
+            error_responses = [
+                "Lost my train of thought there. Can you say that again?",
+                "Sorry, brain fog moment. What were you saying?",
+                "Ugh, I blanked out for a second. One more time?",
+            ]
+            import random as _random
+            fallback = _random.choice(error_responses)
+            yield fallback
+            full_response_final = fallback
+
+        # Save to memory after full response is assembled (same as non-streaming)
+        sara_response = full_response_final.strip()
+        self._track_conversation_patterns(sara_response)
+        self.memory.add_conversation_turn(
+            user_text=user_input,
+            assistant_text=sara_response,
+            emotional_state=emotional_state,
+            context=visual_context,
+        )
+        if emotional_state and emotional_state != "neutral":
+            self.conversation_state["last_emotion_noticed"] = emotional_state
 
     def reset_conversation_state(self):
         """

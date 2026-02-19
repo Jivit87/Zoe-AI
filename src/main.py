@@ -45,7 +45,7 @@ class SaraAI:
         print("\n✓ Sara AI ready!\n")
 
     def handle_user_speech(self, transcription):
-        """Called when the user finishes speaking."""
+        """Called when the user finishes speaking — uses streaming TTS."""
         # Don't process if Sara is currently speaking
         if self.is_speaking:
             return
@@ -54,16 +54,25 @@ class SaraAI:
 
         print(f"\n🎤 You: {transcription}")
 
-        # Generate response (emotion detection is Week 2)
-        response = self.brain.generate_response(
-            user_input=transcription,
-            emotional_state="neutral",
-        )
+        # --- Streaming path ---
+        # Pause STT first so we don't hear ourselves
+        self.is_speaking = True
+        self.stt.pause()
 
-        print(f"💬 Sara: {response}")
-
-        # Speak the response
-        self._speak(response)
+        try:
+            # Stream LLM tokens → speak each sentence chunk as it arrives
+            chunks = self.brain.generate_response_streaming(
+                user_input=transcription,
+                emotional_state="neutral",
+            )
+            full_response = self.tts.speak_stream(chunks)
+            print(f"💬 Sara: {full_response}")
+        except Exception as e:
+            print(f"❌ Streaming error: {e}")
+        finally:
+            self.is_speaking = False
+            self.stt.resume()
+            self.last_interaction_time = time.time()
 
     def _speak(self, text):
         """Speak Sara's response (blocks audio input while speaking)."""
