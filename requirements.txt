@@ -1,5 +1,5 @@
 # ============================================
-# Sara AI - Week 1 Dependencies
+# Sara AI — Dependencies
 # ============================================
 
 # --- PyTorch (CPU/MPS for macOS) ---
@@ -15,18 +15,18 @@ silero-vad>=5.1
 # --- Audio I/O ---
 sounddevice
 soundfile
-librosa
 
 # --- LLM (Groq Cloud API) ---
 groq
 
-# --- Memory System ---
-mem0ai
+# --- RAG Memory System ---
 chromadb
-ollama
+rank-bm25
+sentence-transformers
 
 # --- Text-to-Speech ---
 edge-tts
+kokoro-onnx
 
 # --- Utilities ---
 python-dotenv
