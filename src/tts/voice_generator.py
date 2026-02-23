@@ -19,13 +19,10 @@ import tempfile
 import threading
 
 
-# Pre-defined thinking sounds — played while LLM generates
+# Pre-defined thinking sounds — brief pause fillers while LLM generates
 THINKING_SOUNDS = [
-    "Hmm...",
-    "Well...",
-    "Let me think...",
-    "Mmm.",
-    "Yeah...",
+    "....",
+    "....",
 ]
 
 
