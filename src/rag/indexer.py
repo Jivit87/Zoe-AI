@@ -50,7 +50,7 @@ class MemoryIndexer:
     CHUNK_SIZE = 400  # chars
     CHUNK_OVERLAP = 80  # chars overlap between splits
 
-    def __init__(self, groq_client: Groq, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, groq_client: Groq, model: str = "llama-3.1-8b-instant"):
         self.client = groq_client
         self.model = model
 
@@ -209,7 +209,7 @@ Return ONLY the prefix text, wrapped in square brackets. Example:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
-                temperature=0.1,
+                temperature=0.0,
             )
             prefix = response.choices[0].message.content.strip()
             # Ensure it starts with [ and ends with ]
@@ -252,7 +252,7 @@ Return ONLY valid JSON:
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=250,
-                temperature=0.1,
+                temperature=0.0,
             )
             raw = response.choices[0].message.content.strip()
             match = re.search(r"\{.*\}", raw, re.DOTALL)
